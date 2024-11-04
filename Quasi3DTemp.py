@@ -97,20 +97,9 @@ class Plate(Wall):
         self.Thb=Thick               # size for calculation of shrinkage
         self.deff=4*Sch/Pch          # effective diameter, m
         self.Wat_sec=Nch*Sch
-        # geometry of a faska
-        self.faska_start=0.0 #m
-        self.faska_width=0.0 #m
-        self.faska_depth=0.0 #m
         self.CoatFunc=CoatFunc
     def mould_shape(self,x,z):#m
-        if z>self.faska_start:
-            xf=self.Width-(z-self.faska_start)/(self.Height-self.faska_start)*self.faska_width
-        else:
-            xf=self.Width
-        if x>xf:
-            return self.Taper*z/self.Height-(x-xf)/(self.Width-xf)*(z-self.faska_start)/(self.Height-self.faska_start)*self.faska_depth
-        else:
-            return self.Taper*z/self.Height
+        return self.Taper*z/self.Height
     def HeatFlow(self,x,Ts):#W/m2
         if self.z==self.Zm:
             if Ts<=self.Tsol:
@@ -119,11 +108,50 @@ class Plate(Wall):
                 self.flux_thickz=self.flux_thick_m*(1+2*(Ts-self.Tsol)/self.Tsol)
         elif self.z>self.Zm:
             self.flux_thickz=self.flux_thick_m+self.shrink-self.mould_shape(x,self.z)+self.mould_shape(x,self.Zm)
-            if self.flux_thickz<0.0:self.flux_thickz=0.0
+            if self.flux_thick_m+self.shrink-self.mould_shape(0,self.z)+self.mould_shape(0,self.Zm)<0.0:self.flux_thickz=self.mould_shape(0,self.z)-self.mould_shape(x,self.z)
         Q=(Ts-self.Twat)/(1/self.alfa_watz+self.Rm+self.flux_thickz/self.flux_lamda+1/self.flux_alfa(Ts)/self.v**0.8)
         self.TempW=self.Twat+Q/self.alfa_watz
         self.alfa_wat=self.alfa_watz*(self.Prandtl(self.Twat_in)/self.Prandtl(self.TempW))**0.25
         return (Ts-self.Twat)/(1/self.alfa_wat+self.Rm+self.flux_thickz/self.flux_lamda+1/self.flux_alfa(Ts)/self.v**0.8) #mould 
+class Plate_faska(Plate):
+    def __init__(self,Nch,Sch,Pch,Mould_thick,Width,Thick,CoatFunc):
+        #Nch - number of cooling channels
+        #Sch - cross section of a cooling channel, m2
+        #Pch - perimeter of a cooling channel, m
+        self.Twat_in=15              # Temperature of water [Celsius]
+        self.Qwat=0                  # Water flow [l/min]
+        self.Coat_lamda=80           # coating conductivity, W/mK
+        self.Mould_lamda=370         # mould material conductivity, W/mK
+        self.Taper=0.001             # taper of a side over height, m
+        self.Geom_f=2                # coefficient for calculation of water heating  (1 - actual heat; 2-half of heat from thermal model etc)
+        self.Mould_thick=Mould_thick # distance between water and mould surface, m
+        self.Width=Width             # considered width of the plate, m
+        self.Thb=Thick               # size for calculation of shrinkage
+        self.deff=4*Sch/Pch          # effective diameter, m
+        self.Wat_sec=Nch*Sch
+        # geometry of a faska
+        self.faska_start=0.15 #m
+        self.faska_width=0.0 #m
+        self.faska_fi=0.0 #rad
+        self.faska_depth=0.004 #m
+        self.CoatFunc=CoatFunc    
+        self.ms=[1.36,1.62,1.75,1.78,1.75,1.67,1.54,1.35,1.15,0.94,0.72,0.49,0.25,0]
+    def mould_shape(self,x,z):#m
+        if z<0.25:
+            dd=-0.00064+0.008*z
+        else:
+            i=int((z-0.25)/0.05)
+            if i>12:
+                dd=0
+            else:
+                dd=(self.ms[i]+(self.ms[i+1]-self.ms[i])*(z-i*0.05-0.25)/0.05)/1000
+        if z>self.faska_start:
+            df=(self.Width-x-self.faska_width*(z-self.faska_start)/(self.Height-self.faska_start))*tan(self.faska_fi)
+            if df<-self.faska_depth:
+                dd=-self.faska_depth
+            elif df<dd:
+                dd=df
+        return self.Taper*z/self.Height+dd
 class Circle_tube(Wall):
     #---------- Circle ---------------------------
     # D_billet    billet diameter, m
@@ -370,7 +398,7 @@ self.fem.Elems[El][2]+(i+1)*self.fem.MaxNodeNum-1,self.fem.Elems[El][3]+(i+1)*se
                             QData_mesh[BcName].InsertNextCell(vtk.VTK_TRIANGLE,3,(i*SurfNodeNum[BcName]+SurfNodes[BcName][Node1],(i+1)*SurfNodeNum[BcName]+SurfNodes[BcName][Node0],(i+1)*SurfNodeNum[BcName]+SurfNodes[BcName][Node1]))
                 QData_mesh[BcName].SetPoints(QData_points[BcName])
                 QSurf[BcName]=vtk.vtkFloatArray()
-                QSurf[BcName].SetName('Q')
+                QSurf[BcName].SetName('Q, [MW/m2]')
                 QSurf[BcName].SetNumberOfValues((ElRow+1)*SurfNodeNum[BcName])
     #------------MI--------------------------
         if MI!='':
@@ -471,8 +499,9 @@ self.fem.Elems[El][2]+(i+1)*self.fem.MaxNodeNum-1,self.fem.Elems[El][3]+(i+1)*se
                 if VTUHFlowFile!='':
                     for BcName in self.fem.Surfs:
                         for Node in SurfNodeList[BcName]:
-                            Q=self.HeatFlow(self.fem.Coord[Node][0],self.fem.Coord[Node][1],Z,self.T[Node],BcName)
-                            QSurf[BcName].SetValue(SurfNodeNum[BcName]*LevelNum+SurfNodes[BcName][Node],Q)
+                            Q=self.HeatFlow(self.fem.Coord[Node][0],self.fem.Coord[Node][1],Z,self.T[Node],BcName)                          
+                            QSurf[BcName].SetValue(SurfNodeNum[BcName]*LevelNum+SurfNodes[BcName][Node],Q/1000000)
+#                            QSurf[BcName].SetValue(SurfNodeNum[BcName]*LevelNum+SurfNodes[BcName][Node],self.mould.walls[BcName].flux_thickz*1000) #to extract gap
                 if MI!='':
                     if LevelNum<ElRow:
                         PFaces={} # the first key - min mumber of nodes; the second key - max mumber of nodes
